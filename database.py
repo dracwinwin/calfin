@@ -303,7 +303,6 @@ def generar_imagen(ventas, top_productos, metodos):
 # CARRITO
 # ============================================================
 def agregar_al_carrito(prod, cantidad):
-    """Agrega la cantidad EXACTA al carrito."""
     if cantidad <= 0:
         return
     for item in st.session_state.carrito:
@@ -326,8 +325,8 @@ inicializar()
 
 if "carrito" not in st.session_state:
     st.session_state.carrito = []
-if "cantidad_actual" not in st.session_state:
-    st.session_state.cantidad_actual = 1.0
+if "texto_busqueda" not in st.session_state:
+    st.session_state.texto_busqueda = ""
 
 # CSS
 st.markdown("""
@@ -355,56 +354,27 @@ tab_venta, tab_productos, tab_reportes, tab_historial = st.tabs(
 # PESTAÑA VENDER
 # ============================================================
 with tab_venta:
+    # ====== BUSCADOR EN VIVO ======
+    st.markdown("### 🔍 Busca el producto")
 
-    # ====== CANTIDAD GLOBAL ======
-    st.markdown("### 1️⃣ Elige la cantidad")
-    col_c1, col_c2, col_c3, col_c4, col_c5 = st.columns([1, 1, 1, 1, 2])
-    with col_c1:
-        if st.button("0.5"):
-            st.session_state.cantidad_actual = 0.5
-    with col_c2:
-        if st.button("1"):
-            st.session_state.cantidad_actual = 1.0
-    with col_c3:
-        if st.button("2"):
-            st.session_state.cantidad_actual = 2.0
-    with col_c4:
-        if st.button("5"):
-            st.session_state.cantidad_actual = 5.0
-    with col_c5:
-        st.session_state.cantidad_actual = st.number_input(
-            "Cantidad exacta",
-            min_value=0.1,
-            value=float(st.session_state.cantidad_actual),
-            step=0.1,
-            key="cant_global"
-        )
+    def actualizar_busqueda():
+        st.session_state.texto_busqueda = st.session_state.input_busqueda
 
-    st.success(f"🎯 Cantidad a agregar: **{st.session_state.cantidad_actual}**")
+    st.text_input(
+        "Buscar",
+        key="input_busqueda",
+        placeholder="Escribe: pap, ceb, arr...",
+        on_change=actualizar_busqueda,
+        label_visibility="collapsed"
+    )
 
-    st.divider()
-
-    # ====== BUSCADOR ======
-    st.markdown("### 2️⃣ Busca el producto")
-
-    with st.form("form_busqueda", clear_on_submit=False):
-        col_b1, col_b2 = st.columns([4, 1])
-        with col_b1:
-            texto = st.text_input(
-                "Buscar",
-                value="",
-                placeholder="Escribe: pap, ceb, arr...",
-                label_visibility="collapsed"
-            )
-        with col_b2:
-            buscar_btn = st.form_submit_button("🔍", use_container_width=True)
+    texto = st.session_state.texto_busqueda
 
     # Mostrar resultados si hay texto
     if texto.strip():
         coincidencias = buscar_producto(texto)
         if coincidencias:
-            st.caption(f"💡 {len(coincidencias)} resultado(s) — "
-                       f"toca ➕ para agregar {st.session_state.cantidad_actual}")
+            st.caption(f"💡 {len(coincidencias)} resultado(s)")
             for p in coincidencias[:10]:
                 col1, col2, col3 = st.columns([4, 1, 1])
                 with col1:
@@ -418,8 +388,8 @@ with tab_venta:
                     cant = st.number_input(
                         "cant",
                         min_value=0.1,
-                        value=float(st.session_state.cantidad_actual),
-                        step=0.1,
+                        value=1.0,
+                        step=0.5,
                         key=f"cant_sug_{p['id']}",
                         label_visibility="collapsed"
                     )
@@ -430,8 +400,9 @@ with tab_venta:
         else:
             st.warning(f"❌ Nada encontrado para «{texto}»")
 
-    # ====== MÁS VENDIDOS ======
     st.divider()
+
+    # ====== MÁS VENDIDOS ======
     st.markdown("### ⭐ Más vendidos")
     top = productos_mas_vendidos(limite=8)
     if top:
@@ -446,12 +417,12 @@ with tab_venta:
                         key=f"top_{prod['id']}",
                         use_container_width=True
                     ):
-                        agregar_al_carrito(prod, st.session_state.cantidad_actual)
+                        agregar_al_carrito(prod, 1)
                         st.rerun()
     else:
         st.caption("Aquí aparecerán los productos que más vendas.")
 
-    # ====== LISTA COMPLETA ======
+    # ====== LISTA COMPLETA (solo si no hay búsqueda) ======
     if not texto.strip():
         st.divider()
         st.markdown("### 📦 Todos los productos")
@@ -471,8 +442,8 @@ with tab_venta:
                         cant = st.number_input(
                             "Cantidad",
                             min_value=0.1,
-                            value=float(st.session_state.cantidad_actual),
-                            step=0.1,
+                            value=1.0,
+                            step=0.5,
                             key=f"cant_list_{p['id']}",
                             label_visibility="collapsed"
                         )
