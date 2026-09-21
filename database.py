@@ -85,13 +85,30 @@ def listar_productos():
     return [dict(f) for f in filas]
 
 def buscar_producto(texto):
-    conn = conectar()
-    filas = conn.execute(
-        "SELECT * FROM productos WHERE nombre LIKE ? ORDER BY nombre",
-        (f"%{texto}%",)
-    ).fetchall()
-    conn.close()
-    return [dict(f) for f in filas]
+    """Búsqueda flexible: coincide con cualquier palabra del nombre,
+    sin importar mayúsculas ni tildes."""
+    if not texto:
+        return listar_productos()
+
+    import unicodedata
+
+    def normalizar(s):
+        s = s.lower().strip()
+        s = unicodedata.normalize("NFKD", s)
+        s = "".join(c for c in s if not unicodedata.combining(c))
+        return s
+
+    texto_norm = normalizar(texto)
+    palabras = texto_norm.split()
+
+    todos = listar_productos()
+    resultados = []
+    for p in todos:
+        nombre_norm = normalizar(p["nombre"])
+        # Todas las palabras escritas deben aparecer en el nombre
+        if all(pal in nombre_norm for pal in palabras):
+            resultados.append(p)
+    return resultados
 
 def actualizar_producto(pid, **campos):
     if not campos:
@@ -208,9 +225,9 @@ def generar_excel(ventas, detalles):
     ws["A2"] = f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}"
 
     total = sum(v["total"] for v in ventas)
-    ws["A4"] = "Total vendido"; ws["B4"] = round(total, 2)
+    ws["A4"] = "Total vendido (Bs)"; ws["B4"] = round(total, 2)
     ws["A5"] = "N de ventas"; ws["B5"] = len(ventas)
-    ws["A6"] = "Ticket promedio"
+    ws["A6"] = "Ticket promedio (Bs)"
     ws["B6"] = round(total / len(ventas), 2) if ventas else 0
 
     for fila in ws["A4:A6"]:
@@ -218,7 +235,7 @@ def generar_excel(ventas, detalles):
 
     ws2 = wb.create_sheet("Detalle")
     ws2.append(["#", "Fecha", "Producto", "Cantidad",
-                "P. Unit", "Subtotal", "Pago"])
+                "P. Unit (Bs)", "Subtotal (Bs)", "Pago"])
     for celda in ws2[1]:
         celda.font = Font(bold=True, color="FFFFFF")
         celda.fill = PatternFill("solid", fgColor="2E7D32")
@@ -255,28 +272,28 @@ def generar_imagen(ventas, top_productos, metodos):
     y += 45
     draw.line([(30, y), (770, y)], fill="black", width=2)
     y += 25
-    draw.text((30, y), f"Total vendido:  S/ {total:.2f}",
+    draw.text((30, y), f"Total vendido:  Bs {total:.2f}",
               fill="#2E7D32", font=titulo)
     y += 55
     draw.text((30, y), f"N ventas:  {len(ventas)}",
               fill="black", font=subt)
     y += 40
     prom = total / len(ventas) if ventas else 0
-    draw.text((30, y), f"Ticket promedio:  S/ {prom:.2f}",
+    draw.text((30, y), f"Ticket promedio:  Bs {prom:.2f}",
               fill="black", font=subt)
     y += 60
     draw.text((30, y), "TOP PRODUCTOS", fill="black", font=subt)
     y += 45
     for i, p in enumerate(top_productos[:5], 1):
         linea = (f"{i}. {p['nombre']}  -  {p['total_cant']} u  "
-                 f"-  S/ {p['total_ingreso']:.2f}")
+                 f"-  Bs {p['total_ingreso']:.2f}")
         draw.text((40, y), linea, fill="black", font=texto)
         y += 35
     y += 30
     draw.text((30, y), "METODOS DE PAGO", fill="black", font=subt)
     y += 45
     for m in metodos:
-        linea = (f"{m['metodo_pago'].upper()}:  S/ {m['total']:.2f}  "
+        linea = (f"{m['metodo_pago'].upper()}:  Bs {m['total']:.2f}  "
                  f"({m['n']} ventas)")
         draw.text((40, y), linea, fill="black", font=texto)
         y += 35
@@ -298,6 +315,16 @@ inicializar()
 if "carrito" not in st.session_state:
     st.session_state.carrito = []
 
+# CSS para hacer los inputs más grandes y cómodos
+st.markdown("""
+<style>
+.main .block-container { padding-top: 1rem; }
+.stButton > button { width: 100%; border-radius: 10px; font-weight: bold; }
+div[data-testid="stMetricValue"] { color: #2E7D32; }
+.big-input input { font-size: 22px !important; padding: 14px !important; }
+</style>
+""", unsafe_allow_html=True)
+
 st.title("🛒 MiMercadito")
 st.caption(f"📅 {datetime.now().strftime('%d/%m/%Y %H:%M')}")
 
@@ -305,27 +332,51 @@ tab_venta, tab_productos, tab_reportes, tab_historial = st.tabs(
     ["🧾 Vender", "📦 Productos", "📊 Reportes", "📜 Historial"]
 )
 
-# ---------- VENDER ----------
+# ============================================================
+# VENDER
+# ============================================================
 with tab_venta:
-    filtro = st.text_input("🔍 Buscar producto",
-                           placeholder="Ej: papa, arroz, cebolla")
-    productos = buscar_producto(filtro) if filtro else listar_productos()
+    # ----- BUSCADOR INTELIGENTE -----
+    st.markdown('<div class="big-input">', unsafe_allow_html=True)
+    filtro = st.text_input(
+        "🔍 Buscar producto",
+        placeholder="Escribe y aparecerán sugerencias...",
+        key="buscador_venta",
+        label_visibility="collapsed"
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    if not productos:
+    # Aplicar búsqueda flexible
+    productos = buscar_producto(filtro)
+
+    # ----- SUGERENCIAS RÁPIDAS -----
+    if filtro and productos:
+        st.caption(f"💡 {len(productos)} resultado(s) para «{filtro}»")
+    elif filtro and not productos:
+        st.warning(f"❌ No se encontró «{filtro}»")
+
+    # ----- LISTA DE PRODUCTOS -----
+    if not productos and not filtro:
         st.warning("No hay productos. Ve a **Productos** para agregar.")
-    else:
-        st.markdown("### Productos disponibles")
+    elif productos:
         cols = st.columns(3)
         for i, p in enumerate(productos):
             with cols[i % 3]:
                 with st.container(border=True):
-                    st.markdown(f"**{p['nombre']}**")
-                    st.caption(f"S/ {p['precio_venta']:.2f} / {p['unidad']}")
-                    st.caption(f"Stock: {p['stock']:.1f} {p['unidad']}")
+                    st.markdown(f"### {p['nombre']}")
+                    st.markdown(
+                        f"**Bs {p['precio_venta']:.2f}** / {p['unidad']}"
+                    )
+                    stock_color = "🟢" if p["stock"] > p["stock_minimo"] else "🔴"
+                    st.caption(
+                        f"{stock_color} Stock: {p['stock']:.1f} {p['unidad']}"
+                    )
 
                     cantidad = st.number_input(
-                        "Cantidad", min_value=0.1, value=1.0, step=0.5,
-                        key=f"cant_{p['id']}", label_visibility="collapsed"
+                        "Cantidad",
+                        min_value=0.1, value=1.0, step=0.5,
+                        key=f"cant_{p['id']}",
+                        label_visibility="collapsed"
                     )
                     if st.button("➕ Agregar", key=f"add_{p['id']}"):
                         existe = False
@@ -343,6 +394,7 @@ with tab_venta:
                             })
                         st.rerun()
 
+    # ----- CARRITO -----
     st.divider()
     st.markdown("### 🛒 Carrito")
 
@@ -352,9 +404,9 @@ with tab_venta:
             with col1:
                 st.write(f"**{item['nombre']}** — "
                          f"{item['cantidad']} {item['unidad']} × "
-                         f"S/ {item['precio']:.2f}")
+                         f"Bs {item['precio']:.2f}")
             with col2:
-                st.write(f"S/ {item['cantidad'] * item['precio']:.2f}")
+                st.write(f"Bs {item['cantidad'] * item['precio']:.2f}")
             with col3:
                 if st.button("➖", key=f"menos_{idx}"):
                     item["cantidad"] -= 0.5
@@ -368,12 +420,12 @@ with tab_venta:
 
         total = sum(i["cantidad"] * i["precio"]
                     for i in st.session_state.carrito)
-        st.metric("💰 Total a cobrar", f"S/ {total:.2f}")
+        st.metric("💰 Total a cobrar", f"Bs {total:.2f}")
 
         col1, col2, col3 = st.columns(3)
         with col1:
             metodo = st.selectbox("Método de pago",
-                                  ["efectivo", "yape", "plin", "transferencia"])
+                                  ["efectivo", "QR", "transferencia"])
         with col2:
             cliente = st.text_input("Cliente (opcional)", "")
         with col3:
@@ -382,7 +434,7 @@ with tab_venta:
             if st.button("✅ COBRAR", type="primary"):
                 registrar_venta(st.session_state.carrito,
                                 metodo_pago=metodo, cliente=cliente)
-                st.success(f"✅ Venta registrada: S/ {total:.2f}")
+                st.success(f"✅ Venta registrada: Bs {total:.2f}")
                 st.session_state.carrito = []
                 st.rerun()
 
@@ -392,7 +444,9 @@ with tab_venta:
     else:
         st.info("El carrito está vacío. Agrega productos arriba.")
 
-# ---------- PRODUCTOS ----------
+# ============================================================
+# PRODUCTOS
+# ============================================================
 with tab_productos:
     st.markdown("### ➕ Nuevo producto")
     with st.form("nuevo_producto", clear_on_submit=True):
@@ -400,10 +454,10 @@ with tab_productos:
         with c1:
             nombre = st.text_input("Nombre")
             unidad = st.selectbox("Unidad", ["kg", "unidad", "litro", "docena"])
-            precio_venta = st.number_input("Precio de venta (S/)",
+            precio_venta = st.number_input("Precio de venta (Bs)",
                                            min_value=0.0, step=0.1)
         with c2:
-            precio_compra = st.number_input("Precio de compra (S/)",
+            precio_compra = st.number_input("Precio de compra (Bs)",
                                             min_value=0.0, step=0.1)
             stock = st.number_input("Stock inicial", min_value=0.0, step=1.0)
             stock_minimo = st.number_input("Stock mínimo",
@@ -421,13 +475,21 @@ with tab_productos:
 
     st.divider()
     st.markdown("### 📋 Lista de productos")
-    productos = listar_productos()
+
+    # Buscador en la pestaña productos también
+    filtro_prod = st.text_input(
+        "🔍 Buscar en la lista",
+        placeholder="Escribe para filtrar...",
+        key="buscador_productos"
+    )
+    productos = buscar_producto(filtro_prod)
+
     if productos:
         df = pd.DataFrame(productos)
         df = df[["id", "nombre", "unidad", "precio_compra",
                  "precio_venta", "stock", "stock_minimo"]]
-        df.columns = ["ID", "Nombre", "Unidad", "P. Compra",
-                      "P. Venta", "Stock", "Stock mín."]
+        df.columns = ["ID", "Nombre", "Unidad", "P. Compra (Bs)",
+                      "P. Venta (Bs)", "Stock", "Stock mín."]
         st.dataframe(df, use_container_width=True, hide_index=True)
 
         st.markdown("#### ✏️ Editar o eliminar")
@@ -439,14 +501,16 @@ with tab_productos:
                 c1, c2, c3 = st.columns(3)
                 with c1:
                     nuevo_precio = st.number_input(
-                        "Precio venta", value=float(p["precio_venta"]),
+                        "Precio venta (Bs)",
+                        value=float(p["precio_venta"]),
                         min_value=0.0, step=0.1)
                     nuevo_stock = st.number_input(
                         "Stock", value=float(p["stock"]),
                         min_value=0.0, step=1.0)
                 with c2:
                     nuevo_pc = st.number_input(
-                        "Precio compra", value=float(p["precio_compra"]),
+                        "Precio compra (Bs)",
+                        value=float(p["precio_compra"]),
                         min_value=0.0, step=0.1)
                     nuevo_sm = st.number_input(
                         "Stock mínimo", value=float(p["stock_minimo"]),
@@ -474,7 +538,9 @@ with tab_productos:
     else:
         st.info("Aún no hay productos registrados.")
 
-# ---------- REPORTES ----------
+# ============================================================
+# REPORTES
+# ============================================================
 with tab_reportes:
     st.markdown("### 📊 Reportes")
     opcion = st.radio("Rango",
@@ -506,14 +572,14 @@ with tab_reportes:
     prom = total / n if n else 0
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("💰 Total vendido", f"S/ {total:.2f}")
+    c1.metric("💰 Total vendido", f"Bs {total:.2f}")
     c2.metric("🧾 N ventas", n)
-    c3.metric("📊 Ticket promedio", f"S/ {prom:.2f}")
+    c3.metric("📊 Ticket promedio", f"Bs {prom:.2f}")
 
     st.markdown("#### 🏆 Top productos")
     if top:
         df_top = pd.DataFrame(top)
-        df_top.columns = ["Producto", "Cantidad", "Ingreso (S/)"]
+        df_top.columns = ["Producto", "Cantidad", "Ingreso (Bs)"]
         st.dataframe(df_top, use_container_width=True, hide_index=True)
     else:
         st.info("Sin ventas aún")
@@ -521,7 +587,7 @@ with tab_reportes:
     st.markdown("#### 💳 Métodos de pago")
     if metodos:
         df_m = pd.DataFrame(metodos)
-        df_m.columns = ["Método", "N ventas", "Total (S/)"]
+        df_m.columns = ["Método", "N ventas", "Total (Bs)"]
         st.dataframe(df_m, use_container_width=True, hide_index=True)
 
     st.divider()
@@ -543,14 +609,16 @@ with tab_reportes:
             mime="image/png", use_container_width=True
         )
 
-# ---------- HISTORIAL ----------
+# ============================================================
+# HISTORIAL
+# ============================================================
 with tab_historial:
     st.markdown("### 📜 Historial de ventas")
     ventas = ventas_del_dia()
     if ventas:
         for v in ventas:
             with st.expander(
-                f"Venta #{v['id']} — S/ {v['total']:.2f} — "
+                f"Venta #{v['id']} — Bs {v['total']:.2f} — "
                 f"{v['metodo_pago']} — {v['fecha'][:16]}"
             ):
                 detalles_v = detalle_venta(v["id"])
@@ -558,7 +626,8 @@ with tab_historial:
                     df = pd.DataFrame(detalles_v)
                     df = df[["nombre", "cantidad",
                              "precio_unitario", "subtotal"]]
-                    df.columns = ["Producto", "Cantidad", "P. Unit", "Subtotal"]
+                    df.columns = ["Producto", "Cantidad",
+                                  "P. Unit (Bs)", "Subtotal (Bs)"]
                     st.dataframe(df, use_container_width=True,
                                  hide_index=True)
                 if v.get("cliente"):
