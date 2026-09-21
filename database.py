@@ -8,6 +8,7 @@ st.set_page_config(
 
 import io
 import sqlite3
+import unicodedata
 import pandas as pd
 from datetime import datetime, date
 from openpyxl import Workbook
@@ -84,28 +85,19 @@ def listar_productos():
     conn.close()
     return [dict(f) for f in filas]
 
+def _normalizar(s):
+    s = s.lower().strip()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return s
+
 def buscar_producto(texto):
-    """Búsqueda flexible: coincide con cualquier palabra del nombre,
-    sin importar mayúsculas ni tildes."""
-    if not texto:
+    if not texto or not texto.strip():
         return listar_productos()
-
-    import unicodedata
-
-    def normalizar(s):
-        s = s.lower().strip()
-        s = unicodedata.normalize("NFKD", s)
-        s = "".join(c for c in s if not unicodedata.combining(c))
-        return s
-
-    texto_norm = normalizar(texto)
-    palabras = texto_norm.split()
-
-    todos = listar_productos()
+    palabras = _normalizar(texto).split()
     resultados = []
-    for p in todos:
-        nombre_norm = normalizar(p["nombre"])
-        # Todas las palabras escritas deben aparecer en el nombre
+    for p in listar_productos():
+        nombre_norm = _normalizar(p["nombre"])
         if all(pal in nombre_norm for pal in palabras):
             resultados.append(p)
     return resultados
@@ -181,7 +173,7 @@ def detalle_venta(venta_id):
     conn.close()
     return [dict(f) for f in filas]
 
-def productos_mas_vendidos(limite=10):
+def productos_mas_vendidos(limite=8):
     conn = conectar()
     filas = conn.execute("""
         SELECT nombre, SUM(cantidad) AS total_cant,
@@ -308,20 +300,47 @@ def generar_imagen(ventas, top_productos, metodos):
 
 
 # ============================================================
-# APP
+# FUNCIONES AUXILIARES DE CARRITO
+# ============================================================
+def agregar_al_carrito(prod, cantidad=1):
+    for item in st.session_state.carrito:
+        if item["id"] == prod["id"]:
+            item["cantidad"] += cantidad
+            return
+    st.session_state.carrito.append({
+        "id": prod["id"],
+        "nombre": prod["nombre"],
+        "cantidad": cantidad,
+        "precio": prod["precio_venta"],
+        "unidad": prod["unidad"],
+    })
+
+
+# ============================================================
+# APP PRINCIPAL
 # ============================================================
 inicializar()
 
 if "carrito" not in st.session_state:
     st.session_state.carrito = []
+if "texto_busqueda" not in st.session_state:
+    st.session_state.texto_busqueda = ""
 
-# CSS para hacer los inputs más grandes y cómodos
+# CSS
 st.markdown("""
 <style>
 .main .block-container { padding-top: 1rem; }
-.stButton > button { width: 100%; border-radius: 10px; font-weight: bold; }
+.stButton > button {
+    width: 100%;
+    border-radius: 10px;
+    font-weight: bold;
+    padding: 10px;
+}
 div[data-testid="stMetricValue"] { color: #2E7D32; }
-.big-input input { font-size: 22px !important; padding: 14px !important; }
+.buscador input {
+    font-size: 20px !important;
+    padding: 12px !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -332,69 +351,100 @@ tab_venta, tab_productos, tab_reportes, tab_historial = st.tabs(
     ["🧾 Vender", "📦 Productos", "📊 Reportes", "📜 Historial"]
 )
 
+
 # ============================================================
-# VENDER
+# PESTAÑA VENDER
 # ============================================================
 with tab_venta:
-    # ----- BUSCADOR INTELIGENTE -----
-    st.markdown('<div class="big-input">', unsafe_allow_html=True)
-    filtro = st.text_input(
-        "🔍 Buscar producto",
-        placeholder="Escribe y aparecerán sugerencias...",
-        key="buscador_venta",
-        label_visibility="collapsed"
-    )
-    st.markdown('</div>', unsafe_allow_html=True)
+    # ====== BUSCADOR CON SUGERENCIAS EN VIVO ======
+    @st.fragment
+    def buscador_vivo():
+        texto = st.text_input(
+            "🔍 Buscar producto",
+            value=st.session_state.texto_busqueda,
+            key="input_busqueda",
+            placeholder="Escribe: pap, ceb, arr...",
+            label_visibility="collapsed"
+        )
 
-    # Aplicar búsqueda flexible
-    productos = buscar_producto(filtro)
+        # Actualizar el estado global
+        st.session_state.texto_busqueda = texto
 
-    # ----- SUGERENCIAS RÁPIDAS -----
-    if filtro and productos:
-        st.caption(f"💡 {len(productos)} resultado(s) para «{filtro}»")
-    elif filtro and not productos:
-        st.warning(f"❌ No se encontró «{filtro}»")
+        # Mostrar sugerencias si hay texto
+        if texto.strip():
+            coincidencias = buscar_producto(texto)
 
-    # ----- LISTA DE PRODUCTOS -----
-    if not productos and not filtro:
-        st.warning("No hay productos. Ve a **Productos** para agregar.")
-    elif productos:
-        cols = st.columns(3)
-        for i, p in enumerate(productos):
-            with cols[i % 3]:
-                with st.container(border=True):
-                    st.markdown(f"### {p['nombre']}")
-                    st.markdown(
-                        f"**Bs {p['precio_venta']:.2f}** / {p['unidad']}"
-                    )
-                    stock_color = "🟢" if p["stock"] > p["stock_minimo"] else "🔴"
-                    st.caption(
-                        f"{stock_color} Stock: {p['stock']:.1f} {p['unidad']}"
-                    )
+            if coincidencias:
+                st.caption(
+                    f"💡 {len(coincidencias)} resultado(s) — "
+                    f"toca ➕ para agregar al carrito"
+                )
+                for p in coincidencias[:8]:
+                    col1, col2 = st.columns([5, 1])
+                    with col1:
+                        stock_icon = "🟢" if p["stock"] > p["stock_minimo"] else "🔴"
+                        st.markdown(
+                            f"{stock_icon} **{p['nombre']}** — "
+                            f"Bs {p['precio_venta']:.2f}/{p['unidad']} "
+                            f"· stock {p['stock']:.1f}"
+                        )
+                    with col2:
+                        if st.button("➕", key=f"sug_{p['id']}"):
+                            agregar_al_carrito(p, 1)
+                            st.session_state.texto_busqueda = ""
+                            st.rerun()
+            else:
+                st.warning(f"❌ Nada encontrado para «{texto}»")
 
-                    cantidad = st.number_input(
-                        "Cantidad",
-                        min_value=0.1, value=1.0, step=0.5,
-                        key=f"cant_{p['id']}",
-                        label_visibility="collapsed"
-                    )
-                    if st.button("➕ Agregar", key=f"add_{p['id']}"):
-                        existe = False
-                        for item in st.session_state.carrito:
-                            if item["id"] == p["id"]:
-                                item["cantidad"] += cantidad
-                                existe = True
-                                break
-                        if not existe:
-                            st.session_state.carrito.append({
-                                "id": p["id"], "nombre": p["nombre"],
-                                "cantidad": cantidad,
-                                "precio": p["precio_venta"],
-                                "unidad": p["unidad"],
-                            })
+    buscador_vivo()
+
+    st.divider()
+
+    # ====== BOTONES DE MÁS VENDIDOS ======
+    top = productos_mas_vendidos(limite=8)
+    if top:
+        st.markdown("### ⭐ Más vendidos (toca para agregar)")
+        cols = st.columns(4)
+        todos = listar_productos()
+        for i, t in enumerate(top):
+            prod = next((p for p in todos if p["nombre"] == t["nombre"]), None)
+            if prod:
+                with cols[i % 4]:
+                    if st.button(
+                        f"{prod['nombre']}\nBs {prod['precio_venta']:.2f}",
+                        key=f"top_{prod['id']}",
+                        use_container_width=True
+                    ):
+                        agregar_al_carrito(prod, 1)
                         st.rerun()
 
-    # ----- CARRITO -----
+    # ====== LISTA COMPLETA (solo si no hay búsqueda) ======
+    if not st.session_state.texto_busqueda.strip():
+        st.divider()
+        st.markdown("### 📦 Todos los productos")
+        productos = listar_productos()
+        if not productos:
+            st.warning("No hay productos. Ve a **Productos** para agregar.")
+        else:
+            cols = st.columns(3)
+            for i, p in enumerate(productos):
+                with cols[i % 3]:
+                    with st.container(border=True):
+                        st.markdown(f"**{p['nombre']}**")
+                        st.caption(f"Bs {p['precio_venta']:.2f} / {p['unidad']}")
+                        stock_icon = "🟢" if p["stock"] > p["stock_minimo"] else "🔴"
+                        st.caption(f"{stock_icon} Stock: {p['stock']:.1f}")
+
+                        cantidad = st.number_input(
+                            "Cantidad", min_value=0.1, value=1.0, step=0.5,
+                            key=f"cant_{p['id']}",
+                            label_visibility="collapsed"
+                        )
+                        if st.button("➕ Agregar", key=f"add_{p['id']}"):
+                            agregar_al_carrito(p, cantidad)
+                            st.rerun()
+
+    # ====== CARRITO ======
     st.divider()
     st.markdown("### 🛒 Carrito")
 
@@ -444,8 +494,9 @@ with tab_venta:
     else:
         st.info("El carrito está vacío. Agrega productos arriba.")
 
+
 # ============================================================
-# PRODUCTOS
+# PESTAÑA PRODUCTOS
 # ============================================================
 with tab_productos:
     st.markdown("### ➕ Nuevo producto")
@@ -476,7 +527,6 @@ with tab_productos:
     st.divider()
     st.markdown("### 📋 Lista de productos")
 
-    # Buscador en la pestaña productos también
     filtro_prod = st.text_input(
         "🔍 Buscar en la lista",
         placeholder="Escribe para filtrar...",
@@ -538,8 +588,9 @@ with tab_productos:
     else:
         st.info("Aún no hay productos registrados.")
 
+
 # ============================================================
-# REPORTES
+# PESTAÑA REPORTES
 # ============================================================
 with tab_reportes:
     st.markdown("### 📊 Reportes")
@@ -609,8 +660,9 @@ with tab_reportes:
             mime="image/png", use_container_width=True
         )
 
+
 # ============================================================
-# HISTORIAL
+# PESTAÑA HISTORIAL
 # ============================================================
 with tab_historial:
     st.markdown("### 📜 Historial de ventas")
